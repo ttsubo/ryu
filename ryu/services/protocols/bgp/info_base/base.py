@@ -485,7 +485,7 @@ class Destination(object):
 
         # If we have a new version of old/known path we use it and delete old
         # one.
-#        self._remove_old_paths()
+        self._remove_old_paths()
 
         # Collect all new paths into known paths.
         self._known_path_list.extend(self._new_path_list)
