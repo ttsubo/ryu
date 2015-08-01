@@ -22,6 +22,10 @@ import struct
 import traceback
 from socket import IPPROTO_TCP, TCP_NODELAY
 from eventlet import semaphore
+import eventlet
+#eventlet.monkey_patch()
+
+
 
 from ryu.lib.packet import bgp
 from ryu.lib.packet.bgp import RouteFamily
@@ -265,10 +269,10 @@ class BgpProtocol(Protocol, Activity):
         """
         # We know the peer we are connected to, we send open message.
         self._peer = peer
-        self.connection_made()
+#        self.connection_made()
 
         # We wait for peer to send messages.
-        self._recv_loop()
+#        self._recv_loop()
 
     def data_received(self, next_bytes):
         try:

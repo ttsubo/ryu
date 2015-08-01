@@ -20,6 +20,10 @@ import logging
 import socket
 import time
 import traceback
+from ryu.lib import hub
+from ryu.lib.hub import StreamServer
+import eventlet
+eventlet.monkey_patch()
 
 from ryu.services.protocols.bgp.base import Activity
 from ryu.services.protocols.bgp.base import OrderedDict
@@ -46,6 +50,7 @@ from ryu.services.protocols.bgp.utils.evtlet import EventletIOFactory
 from ryu.services.protocols.bgp.utils import stats
 
 from ryu.lib.packet import bgp
+from ryu.lib.packet import bmp
 
 from ryu.lib.packet.bgp import RouteFamily
 from ryu.lib.packet.bgp import RF_IPv4_UC
@@ -80,17 +85,24 @@ from ryu.lib.packet.bgp import BGPPathAttributeMultiExitDisc
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_ORIGIN
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_AS_PATH
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_NEXT_HOP
+from ryu.lib.packet.bgp import BGP_ATTR_TYPE_MULTI_EXIT_DISC
+from ryu.lib.packet.bgp import BGP_ATTR_TYPE_LOCAL_PREF
+from ryu.lib.packet.bgp import BGP_ATTR_TYPE_COMMUNITIES
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_MP_REACH_NLRI
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_MP_UNREACH_NLRI
-from ryu.lib.packet.bgp import BGP_ATTR_TYPE_MULTI_EXIT_DISC
-from ryu.lib.packet.bgp import BGP_ATTR_TYPE_COMMUNITIES
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_EXTENDED_COMMUNITIES
+from ryu.lib.packet.bgp import BGP_ATTR_ORIGIN_IGP
+from ryu.lib.packet.bgp import BGP_ATTR_ORIGIN_EGP
+from ryu.lib.packet.bgp import BGP_ATTR_ORIGIN_INCOMPLETE
 
 from ryu.lib.packet.bgp import BGPTwoOctetAsSpecificExtendedCommunity
 from ryu.lib.packet.bgp import BGPIPv4AddressSpecificExtendedCommunity
 
 LOG = logging.getLogger('bgpspeaker.peer')
 
+HOST = '0.0.0.0'
+PORT = 11019
+ADDR = (HOST, PORT)
 
 def is_valid_state(state):
     """Returns True if given state is a valid bgp finite state machine state.
@@ -458,9 +470,11 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
         self.on_update_attribute_maps()
 
     def is_mpbgp_cap_valid(self, route_family):
+        '''
         if not self.in_established:
             raise ValueError('Invalid request: Peer not in established state')
         return self._protocol.is_mbgp_cap_valid(route_family)
+        '''
 
     def is_ebgp_peer(self):
         """Returns *True* if this is a eBGP peer, else *False*."""
@@ -645,7 +659,11 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
         self._client_factory = client_factory
 
         # Tries actively to establish session if CONNECT_MODE is not PASSIVE
-        self._on_update_connect_mode(self._neigh_conf.connect_mode)
+#        self._on_update_connect_mode(self._neigh_conf.connect_mode)
+        ###################################
+        #       Bgp Simulator Mode        #
+        ###################################
+        hub.spawn(StreamServer(ADDR,self.handler).serve_forever)
 
         # Start sink processing
         self._process_outgoing_msg_list()
@@ -1025,6 +1043,194 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
             update = BGPUpdate(path_attributes=new_pathattr)
         return update
 
+    def handler(self, sock, addr):
+        LOG.info("BMP client connected, ip=%s, port=%s" % addr)
+        buf = bytearray()
+        required_len = bmp.BMPMessage._HDR_LEN
+        is_active = True
+
+        while is_active:
+            ret = sock.recv(required_len)
+            if len(ret) == 0:
+                is_active = False
+                break
+            buf += ret
+            while len(buf) >= required_len:
+                version, len_, _ = bmp.BMPMessage.parse_header(buf)
+
+                if len(buf) < len_:
+                    break
+
+                try:
+                    msg, rest = bmp.BMPMessage.parser(buf)
+                except Exception, e:
+                    pkt = buf[:len_]
+                    buf = buf[len_:]
+                else:
+                    buf = rest
+                    if isinstance(msg, bmp.BMPInitiation):
+                        LOG.info("Start BMP session!! [%s]"%addr[0])
+                    elif isinstance(msg, bmp.BMPRouteMonitoring):
+                        result = self.print_BMPRouteMonitoring(msg, addr)
+                        if result:
+                            LOG.info("Received BMPRouteMonitoring=[%s]"%result)
+                required_len = bmp.BMPMessage._HDR_LEN
+
+        LOG.info("BMP client disconnected, ip=%s, port=%s" % addr)
+        sock.close()
+
+    def print_BMPRouteMonitoring(self, msg, addr):
+        if msg.timestamp == 0:
+            bgp_t = time.strftime("%Y/%m/%d %H:%M:%S", time.localtime())
+            if isinstance(msg.bgp_update, bgp.BGPRouteRefresh):
+                self.extract_BGP_RouteRefresh(msg, addr, bgp_t)
+            elif isinstance(msg.bgp_update, bgp.BGPUpdate):
+                self.extract_BGP_Update(msg, addr, bgp_t)
+        else:
+            bgp_t = time.strftime("%Y/%m/%d %H:%M:%S",
+                                   time.localtime(int(msg.timestamp)))
+            now_t = time.strftime("%Y/%m/%d %H:%M:%S", time.localtime())
+            time1 = time.mktime(time.localtime(int(msg.timestamp)))
+            time2 = time.mktime(time.localtime())
+            time_delta = time2 - time1
+            if time_delta < 60:
+                if isinstance(msg.bgp_update, bgp.BGPRouteRefresh):
+                    result = self.extract_BGP_RouteRefresh(msg, addr, bgp_t)
+                elif isinstance(msg.bgp_update, bgp.BGPUpdate):
+                    result = self.extract_BGP_Update(msg, addr, bgp_t)
+                return result
+
+    def extract_BGP_RouteRefresh(self, msg, addr, bgp_t):
+        bmp_result = {}
+        bmp_result['received_time'] = bgp_t
+        bmp_result['message_type'] = "BGP_RouteRefresh"
+        return bmp_result
+
+    def extract_BGP_Update(self, msg, addr, bgp_t):
+        bmp_result = {}
+        bmp_result['received_time'] = bgp_t
+        update_msg = msg.bgp_update
+        self.handle_msg(update_msg)
+        if msg.bgp_update.withdrawn_routes:
+            bmp_result = self.extract_bgp4_withdraw(update_msg, bmp_result)
+        elif msg.bgp_update.nlri:
+            bmp_result = self.extract_bgp4_nlri(update_msg, bmp_result)
+        else:
+            bmp_result = self.extract_PathAttributes(update_msg, bmp_result)
+
+        return bmp_result
+
+    def extract_bgp4_withdraw(self, update_msg, bmp_result):
+        # Path Attributes #
+        bmp_result = self.extract_PathAttributes(update_msg, bmp_result)
+
+        # Withdrawn Routes #
+        del_nlri_list = []
+        for del_nlri in update_msg.withdrawn_routes:
+            nlri = {}
+            nlri['prefix'] = del_nlri.prefix
+            del_nlri_list.append(nlri)
+        bmp_result['Withdrawn Routes'] = del_nlri_list
+        bmp_result['message_type'] = "BGP_Update(withdraw)"
+
+        return bmp_result
+
+    def extract_bgp4_nlri(self, update_msg, bmp_result):
+        # Path Attributes #
+        bmp_result = self.extract_PathAttributes(update_msg, bmp_result)
+
+        # NLRI #
+        add_nlri_list = []
+        for add_nlri in update_msg.nlri:
+            nlri = {}
+            nlri['prefix'] = add_nlri.prefix
+            add_nlri_list.append(nlri)
+        bmp_result['NLRI'] = add_nlri_list
+        bmp_result['message_type'] = "BGP_Update"
+
+        return bmp_result
+
+    def extract_PathAttributes(self, update_msg, bmp_result):
+        path_attributes = {}
+        # ORIGIN #
+        origin = update_msg.get_path_attr(BGP_ATTR_TYPE_ORIGIN)
+        if origin:
+            if origin.value == BGP_ATTR_ORIGIN_IGP:
+                origin_value = 'i'
+            elif origin.value == BGP_ATTR_ORIGIN_EGP:
+                origin_value = 'e'
+            elif origin.value == BGP_ATTR_ORIGIN_INCOMPLETE:
+                origin_value = '?'
+            path_attributes['ORIGIN'] = origin_value
+
+        # AS_PATH #
+        aspath = update_msg.get_path_attr(BGP_ATTR_TYPE_AS_PATH)
+        if aspath:
+            path_attributes['AS_PATH'] = aspath.path_seg_list
+
+        # NEXT_HOP #
+        nexthop = update_msg.get_path_attr(BGP_ATTR_TYPE_NEXT_HOP)
+        if nexthop:
+            path_attributes['NEXT_HOP'] = nexthop.value
+
+        # MULTI_EXIT_DISC #
+        med = update_msg.get_path_attr(BGP_ATTR_TYPE_MULTI_EXIT_DISC)
+        if med:
+            path_attributes['MULTI_EXIT_DISC'] = med.value
+
+        # LOCAL_PREF #
+        localpref = update_msg.get_path_attr(BGP_ATTR_TYPE_LOCAL_PREF)
+        if localpref:
+            path_attributes['LOCAL_PREF'] = localpref.value
+
+        # COMMUNITIES #
+        communities = update_msg.get_path_attr(BGP_ATTR_TYPE_COMMUNITIES)
+        if communities:
+            path_attributes['COMMUNITIES'] = communities.value
+
+        # MP_REACH_NLRI #
+        mp_reach_nlri_attr = update_msg.get_path_attr(
+            BGP_ATTR_TYPE_MP_REACH_NLRI
+        )
+        if mp_reach_nlri_attr:
+            bmp_result['message_type'] = "BGP_Update"
+            mp_reach_nlri = {}
+            add_nlri_list = []
+            for add_nlri in mp_reach_nlri_attr.nlri:
+                nlri = {}
+                nlri['prefix'] = add_nlri.prefix
+                nlri['route_dist'] = add_nlri.route_dist
+                nlri['label_list'] = add_nlri.label_list
+                add_nlri_list.append(nlri)
+            mp_reach_nlri['nexthop'] = mp_reach_nlri_attr.next_hop
+            mp_reach_nlri['nlri'] = add_nlri_list
+            path_attributes['MP_REACH_NLRI'] = mp_reach_nlri
+
+        # MP_UNREACH_NLRI #
+        mp_unreach_nlri_attr = update_msg.get_path_attr(
+            BGP_ATTR_TYPE_MP_UNREACH_NLRI
+        )
+        if mp_unreach_nlri_attr:
+            bmp_result['message_type'] = "BGP_Update(withdraw)"
+            mp_unreach_nlri = {}
+            del_nlri_list = []
+            for del_nlri in mp_unreach_nlri_attr.withdrawn_routes:
+                nlri = {}
+                nlri['prefix'] = del_nlri.prefix
+                nlri['route_dist'] = del_nlri.route_dist
+                nlri['label_list'] = del_nlri.label_list
+                del_nlri_list.append(nlri)
+            mp_unreach_nlri['nlri'] = del_nlri_list
+            path_attributes['MP_UNREACH_NLRI'] = mp_unreach_nlri
+
+        # EXTENDED_COMMUNITIES #
+        extComm = update_msg.get_path_attr(BGP_ATTR_TYPE_EXTENDED_COMMUNITIES)
+        if extComm:
+            path_attributes['EXTENDED_COMMUNITIES'] = extComm.rt_list
+
+        bmp_result['path_attributes'] = path_attributes
+        return bmp_result
+
     def _connect_loop(self, client_factory):
         """In the current greeenlet we try to establish connection with peer.
 
@@ -1220,10 +1426,12 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
         assert update_msg.type == BGP_MSG_UPDATE
         # An UPDATE message may be received only in the Established state.
         # Receiving an UPDATE message in any other state is an error.
+        '''
         if self.state.bgp_state != const.BGP_FSM_ESTABLISHED:
             LOG.error('Received UPDATE message when not in ESTABLISHED'
                       ' state.')
             raise bgp.FiniteStateMachineError()
+        '''
 
         mp_reach_attr = update_msg.get_path_attr(
             BGP_ATTR_TYPE_MP_REACH_NLRI
@@ -1263,20 +1471,24 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
 
         # Check if received MP_UNREACH path attribute is of available afi/safi
         if mp_unreach_attr:
+            '''
             if not self.is_mpbgp_cap_valid(mp_unreach_attr.route_family):
                 LOG.error('Got UPDATE message with un-available afi/safi for'
                           ' MP_UNREACH path attribute (non-negotiated'
                           ' afi/safi) %s', mp_unreach_attr.route_family)
                 # raise bgp.OptAttrError()
+            '''
 
         if mp_reach_attr:
             # Check if received MP_REACH path attribute is of available
             # afi/safi
+            '''
             if not self.is_mpbgp_cap_valid(mp_reach_attr.route_family):
                 LOG.error('Got UPDATE message with un-available afi/safi for'
                           ' MP_UNREACH path attribute (non-negotiated'
                           ' afi/safi) %s', mp_reach_attr.route_family)
                 # raise bgp.OptAttrError()
+            '''
 
             # Check for missing well-known mandatory attributes.
             aspath = update_msg.get_path_attr(BGP_ATTR_TYPE_AS_PATH)
@@ -1314,7 +1526,7 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
             according to configuration of all VRFs.
         Assumes Multiprotocol Extensions capability is supported and enabled.
         """
-        assert self.state.bgp_state == const.BGP_FSM_ESTABLISHED
+#        assert self.state.bgp_state == const.BGP_FSM_ESTABLISHED
         self.state.incr(PeerCounterNames.RECV_UPDATES)
         if not self._validate_update_msg(update_msg):
             # If update message was not valid for some reason, we ignore its
@@ -1668,7 +1880,7 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
                 self._enqueue_init_updates()
 
         elif msg.type == BGP_MSG_UPDATE:
-            assert self.state.bgp_state == const.BGP_FSM_ESTABLISHED
+#            assert self.state.bgp_state == const.BGP_FSM_ESTABLISHED
             # Will try to process this UDPATE message further
             self._handle_update_msg(msg)
 
