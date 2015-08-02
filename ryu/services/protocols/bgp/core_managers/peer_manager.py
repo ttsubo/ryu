@@ -106,9 +106,10 @@ class PeerManager(object):
         if msg.timestamp == 0:
             bgp_t = time.strftime("%Y/%m/%d %H:%M:%S", time.localtime())
             if isinstance(msg.bgp_update, bgp.BGPRouteRefresh):
-                self.extract_BGP_RouteRefresh(msg, addr, bgp_t)
+                result = self.extract_BGP_RouteRefresh(msg, addr, bgp_t)
             elif isinstance(msg.bgp_update, bgp.BGPUpdate):
-                self.extract_BGP_Update(msg, addr, bgp_t)
+                result = self.extract_BGP_Update(msg, addr, bgp_t, peer_ip)
+            return result
         else:
             bgp_t = time.strftime("%Y/%m/%d %H:%M:%S",
                                    time.localtime(int(msg.timestamp)))

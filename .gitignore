@@ -9,6 +9,7 @@ GRTAGS
 GPATH
 GSYMS
 *.log
+*.dump
 .venv/
 .tox/
 .coverage
