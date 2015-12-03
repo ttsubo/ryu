@@ -855,8 +855,6 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
             # By default we use BGPS's interface IP with this peer as next_hop.
             if self.is_ebgp_peer():
                 next_hop = self._session_next_hop(path)
-                if path.is_local() and path.has_nexthop():
-                    next_hop = path.nexthop
             else:
                 next_hop = path.nexthop
                 # RFC 4271 allows us to change next_hop
