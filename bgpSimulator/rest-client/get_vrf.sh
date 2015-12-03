@@ -14,13 +14,8 @@ def start_get_vrf(dpid):
     method = "GET"
 
     vrf_result = request_info(operation, url_path, method, "")
-
-    nowtime = vrf_result['time']
+    print ""
     result = vrf_result['vrfs']
-    print "+++++++++++++++++++++++++++++++"
-    print "%s : Show vrf " % nowtime
-    print "+++++++++++++++++++++++++++++++"
-
     print "%s" % result
     print ""
         

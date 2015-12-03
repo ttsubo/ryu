@@ -14,13 +14,8 @@ def start_get_rib(dpid):
     method = "GET"
 
     rib_result = request_info(operation, url_path, method, "")
-
-    nowtime = rib_result['time']
+    print ""
     result = rib_result['rib']
-    print "+++++++++++++++++++++++++++++++"
-    print "%s : Show rib " % nowtime
-    print "+++++++++++++++++++++++++++++++"
-
     print "%s" % result
     print ""
         
