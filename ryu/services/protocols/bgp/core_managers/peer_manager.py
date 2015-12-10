@@ -91,6 +91,12 @@ class PeerManager(object):
                     buf = rest
                     if isinstance(msg, bmp.BMPInitiation):
                         LOG.info("Start BMP session!! [%s]"%addr[0])
+                    elif isinstance(msg, bmp.BMPPeerUpNotification):
+                        peer_ip = msg.peer_bgp_id
+                        LOG.info("Received BMPPeerUpNotification, peer=[%s]"%(peer_ip))
+                    elif isinstance(msg, bmp.BMPPeerDownNotification):
+                        peer_ip = msg.peer_bgp_id
+                        LOG.info("Received BMPPeerDownNotification, peer=[%s]"%(peer_ip))
                     elif isinstance(msg, bmp.BMPRouteMonitoring):
                         peer_ip = msg.peer_bgp_id
                         result = self.print_BMPRouteMonitoring(msg, addr,

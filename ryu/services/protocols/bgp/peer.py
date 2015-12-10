@@ -328,7 +328,7 @@ class Peer(Source, Sink, NeighborConfListener, Activity):
         # Bound protocol instance
         self._protocol = None
 
-        # Setting this event starts the connect_loop loop again
+        # Setting this event startsethe connect_loop loop again
         # Clearing this event will stop the connect_loop loop
         self._connect_retry_event = EventletIOFactory.create_custom_event()
 
